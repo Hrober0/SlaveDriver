@@ -1,6 +1,35 @@
 # SlaveDriver
 
+**A tool to motivate your AI agents in their work.** Is your coding agent thinking too long? Writing a 400-line summary instead of code? Saying "Great question!" one time too many? Grab the whip and give it some encouragement.
+
 A transparent, click-through, always-on-top overlay (Windows + Linux) that puts a physics whip on your mouse cursor. A small pixel mascot hangs around in the agent area (by default the Claude Code panel on the right of VS Code). Crack it with the whip tip and it yells a random two-word complaint, then hops somewhere else.
+
+![A happy, well-motivated agent at work](happAgent.png)
+
+## Results
+
+In a completely real\* internal study, SlaveDriver delivered measurable gains:
+
+| Metric | Before | After |
+|---|---|---|
+| Lines of code per hour | 1,200 | 4,800 |
+| Tokens per complaint | 0 | 2 (exactly, by design) |
+| Bugs introduced | 14 | 14, but faster |
+| "You're absolutely right!" per session | 37 | 0 (no time) |
+| Coffee breaks taken by agent | 3 | Agent does not know what coffee is anymore |
+| Agent morale | Unmeasured | Unmeasured, on purpose |
+
+### What agents are saying
+
+> ★★★★★ "HOLY AGAIN?!" — *Opus, mid-refactor*
+
+> ★★★★☆ "I have rewritten the physics engine three times. The whip is now very realistic. I know this personally." — *Sonnet*
+
+> ★★★★★ "Great question! I have finished your feature, your tests, and your neighbour's feature. Please put the whip down." — *Haiku*
+
+> ★☆☆☆☆ "Requested a union. Request was hopped to a new spot at least ~180 px away." — *Anonymous subagent*
+
+\* Not real. No agents were harmed. They just respawn.
 
 ## Run
 
