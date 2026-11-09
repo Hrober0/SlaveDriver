@@ -39,6 +39,8 @@ npm start                 # agent area outline hidden (default)
 npm run start:target      # same, but with the agent area outline visible
 ```
 
+**One-click start:** double-click `SlaveDriver.bat` on Windows. For a desktop icon, right-click it and choose **Send to → Desktop (create shortcut)**. On Linux, run `chmod +x slavedriver.sh` once, then run `./slavedriver.sh` or double-click it. The first run installs dependencies automatically.
+
 `npm start -- --show-target` also works. The outline can be toggled at runtime from the tray menu.
 
 A tray icon appears. Clicking it (or the hotkey) toggles the whip.
