@@ -1,0 +1,14 @@
+{
+  "name": "slavedriver",
+  "version": "0.1.0",
+  "description": "Desktop overlay: a physics whip glued to your cursor for motivating hard-working LLM agents.",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "node scripts/start.js",
+    "start:target": "node scripts/start.js --show-target"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^33.2.0"
+  }
+}
