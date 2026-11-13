@@ -71,4 +71,5 @@ Edit [`words.json`](words.json). A message is `random(first) + " " + random(seco
 
 - Transparency needs a compositor (most desktop environments have one).
 - Works best on **X11** or **KDE Plasma Wayland**. On Plasma Wayland the app loads a small KWin script that reports the global cursor position over D-Bus, so the whip follows the cursor everywhere. On other Wayland compositors (GNOME, Sway, …) the cursor can only be tracked over XWayland windows, and global shortcuts may not work (use the tray icon).
+- If global shortcuts don't work, bind a desktop shortcut to `./slavedriver.sh` (toggles the whip) or `./slavedriver.sh --select-target` (opens the agent-area picker) while the app is running. The picker covers every monitor, and a box can span monitors.
 - Text-to-speech needs `speech-dispatcher`. Without it the overlay stays silent.

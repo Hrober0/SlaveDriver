@@ -8,6 +8,7 @@ const HZ = 240;               // fixed physics rate
 const DT = 1 / HZ;
 
 let mode = 'off';
+let active = false;           // this display's overlay has the cursor (only it simulates/draws the whip)
 let cfg = null;
 let origin = { x: 0, y: 0 };
 let target = null;            // window-local rect
@@ -22,10 +23,12 @@ let lastCrack = 0;
 let hitFlash = 0;             // timestamp of last hit for target flash
 const popups = [];            // floating messages
 const cracks = [];            // crack starbursts
-let drag = null;              // target selection drag {x0, y0, x1, y1}
+let drag = null;              // target selection drag {x0, y0, x1, y1} (only in the window it started in)
+let shownDrag = null;         // drag box to draw here, mirrored from whichever display it started on
 let showTarget = false;
 let words = { first: ['ouch'], second: ['my head'] };
-let mascot = null;            // {x, y, state: 'idle'|'hurt'|'jump', t0, from, to, landedAt}
+let sharedMascot = null;      // from main, global coords: {from, to, hitAt} (Date.now() ms)
+let mascot = null;            // derived each frame, window-local: {x, y, state: 'idle'|'hurt'|'jump', t0, landedAt}
 
 const MASCOT_PX = 5;          // size of one sprite pixel
 const MASCOT_HIT_R = 34;
@@ -36,8 +39,12 @@ const JUMP_MS = 650;
 
 function resize() {
   const dpr = window.devicePixelRatio || 1;
-  canvas.width = Math.round(innerWidth * dpr);
-  canvas.height = Math.round(innerHeight * dpr);
+  const w = Math.round(innerWidth * dpr);
+  const h = Math.round(innerHeight * dpr);
+  // Assigning canvas.width clears the canvas even if unchanged, which shows as a blank frame.
+  if (canvas.width === w && canvas.height === h) return;
+  canvas.width = w;
+  canvas.height = h;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 addEventListener('resize', resize);
@@ -45,24 +52,28 @@ resize();
 
 whipApi.onState((s) => {
   const prevMode = mode;
+  const prevActive = active;
   mode = s.mode;
+  active = !!s.active;
   cfg = s.config;
   origin = s.origin;
   showTarget = s.showTarget;
   words = s.words;
-  const prevTarget = JSON.stringify(target);
   target = s.target && {
     x: s.target.x - origin.x, y: s.target.y - origin.y,
     width: s.target.width, height: s.target.height,
   };
-  if (!mascot || JSON.stringify(target) !== prevTarget) spawnMascot();
+  sharedMascot = s.mascot;
   document.body.classList.toggle('target', mode === 'target');
-  if (mode === 'whip' && prevMode !== 'whip') { pts = []; hand = null; cursor = null; }
-  if (mode !== 'target') drag = null;
+  if ((mode === 'whip' && prevMode !== 'whip') || active !== prevActive) { pts = []; hand = null; cursor = null; }
+  if (mode !== 'target') { drag = null; shownDrag = null; }
   resize();
 });
 
+whipApi.onMascot((m) => { sharedMascot = m; });
+
 whipApi.onCursor((p) => {
+  if (!active) return;
   if (cursor && Math.hypot(p.x - cursor.x, p.y - cursor.y) > 600 && hand) {
     // Display jump: teleport the whip instead of slinging it across the screen.
     pts = [];
@@ -183,8 +194,7 @@ function step(handPos, handVel) {
       && segDist(tip.px, tip.py, tip.x, tip.y, mascot.x, mascot.y) < MASCOT_HIT_R) {
       lastHit = now;
       hitFlash = now;
-      mascot.state = 'hurt';
-      mascot.t0 = now;
+      whipApi.mascotHit();   // main starts the hurt + hop on every display
       onHit({ x: mascot.x, y: mascot.y - 40 }, speed);
     }
   } else if (inRect(tip, target)) {
@@ -205,51 +215,30 @@ function segDist(x1, y1, x2, y2, px, py) {
 
 // ---------- mascot ----------
 
-function randomSpot(avoid) {
-  const m = 50;
-  const r = target;
-  const minX = r.x + m, maxX = Math.max(minX, r.x + r.width - m);
-  const minY = r.y + m + 20, maxY = Math.max(minY, r.y + r.height - m);
-  let best = null;
-  for (let k = 0; k < 12; k++) {
-    const p = { x: minX + Math.random() * (maxX - minX), y: minY + Math.random() * (maxY - minY) };
-    if (!avoid) return p;
-    const d = Math.hypot(p.x - avoid.x, p.y - avoid.y);
-    if (!best || d > best.d) best = { ...p, d };
-    if (d > 180) return p;
-  }
-  return best;
-}
-
-function spawnMascot() {
-  if (!target) { mascot = null; return; }
-  const p = randomSpot();
-  mascot = { x: p.x, y: p.y, state: 'idle', t0: 0, landedAt: performance.now() - 1000 };
-}
-
 // Ease that overshoots a bit and settles: feels like a hop with a little skid.
 const easeOutBack = (t) => 1 + 2.4 * Math.pow(t - 1, 3) + 1.4 * Math.pow(t - 1, 2);
 const easeInOutCubic = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 
+// The mascot lives in main (one for all displays); derive where it is right now in this window.
+// `now` is Date.now(), so every overlay computes the same phase.
 function updateMascot(now) {
-  if (!mascot) return;
-  if (mascot.state === 'hurt' && now - mascot.t0 > HURT_MS) {
-    mascot.state = 'jump';
-    mascot.t0 = now;
-    mascot.from = { x: mascot.x, y: mascot.y };
-    mascot.to = randomSpot(mascot.from);
-  }
-  if (mascot.state === 'jump') {
-    const t = Math.min(1, (now - mascot.t0) / JUMP_MS);
-    const e = easeOutBack(t);
-    mascot.x = mascot.from.x + (mascot.to.x - mascot.from.x) * e;
-    mascot.y = mascot.from.y + (mascot.to.y - mascot.from.y) * easeInOutCubic(t);
-    if (t >= 1) {
-      mascot.state = 'idle';
-      mascot.x = mascot.to.x;
-      mascot.y = mascot.to.y;
-      mascot.landedAt = now;
-    }
+  const m = sharedMascot;
+  if (!m) { mascot = null; return; }
+  const from = { x: m.from.x - origin.x, y: m.from.y - origin.y };
+  const to = { x: m.to.x - origin.x, y: m.to.y - origin.y };
+  const since = now - m.hitAt;
+  if (since < HURT_MS) {
+    mascot = { ...from, state: 'hurt', t0: m.hitAt };
+  } else if (since < HURT_MS + JUMP_MS) {
+    const t0 = m.hitAt + HURT_MS;
+    const t = (now - t0) / JUMP_MS;
+    mascot = {
+      x: from.x + (to.x - from.x) * easeOutBack(t),
+      y: from.y + (to.y - from.y) * easeInOutCubic(t),
+      state: 'jump', t0,
+    };
+  } else {
+    mascot = { ...to, state: 'idle', landedAt: m.hitAt ? m.hitAt + HURT_MS + JUMP_MS : now - 1000 };
   }
 }
 
@@ -558,8 +547,8 @@ function drawTargetMode() {
     ctx.fillStyle = 'rgba(255, 60, 60, 0.08)';
     ctx.fillRect(target.x, target.y, target.width, target.height);
   }
-  if (drag) {
-    const r = dragRect();
+  if (shownDrag) {
+    const r = shownDrag;
     ctx.clearRect(r.x, r.y, r.width, r.height);
     ctx.fillStyle = 'rgba(80, 200, 255, 0.15)';
     ctx.fillRect(r.x, r.y, r.width, r.height);
@@ -588,19 +577,29 @@ function dragRect() {
   };
 }
 
-addEventListener('mousedown', (e) => {
+whipApi.onDrag((r) => { shownDrag = r; });
+
+canvas.addEventListener('pointerdown', (e) => {
   if (mode !== 'target' || e.button !== 0) return;
+  canvas.setPointerCapture(e.pointerId);
   drag = { x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY };
+  whipApi.dragUpdate(dragRect());
 });
-addEventListener('mousemove', (e) => {
-  if (mode === 'target' && drag) { drag.x1 = e.clientX; drag.y1 = e.clientY; }
-});
-addEventListener('mouseup', () => {
+canvas.addEventListener('pointermove', (e) => {
   if (mode !== 'target' || !drag) return;
+  drag.x1 = e.clientX; drag.y1 = e.clientY;
+  whipApi.dragUpdate(dragRect());
+});
+function endDrag(e) {
+  if (mode !== 'target' || !drag) return;
+  drag.x1 = e.clientX; drag.y1 = e.clientY;
   const r = dragRect();
   drag = null;
+  whipApi.dragUpdate(null);
   if (r.width > 20 && r.height > 20) whipApi.setTarget(r);
-});
+}
+canvas.addEventListener('pointerup', endDrag);
+canvas.addEventListener('pointercancel', () => { drag = null; whipApi.dragUpdate(null); });
 addEventListener('keydown', (e) => {
   if (mode === 'target' && e.key === 'Escape') whipApi.cancelTarget();
 });
@@ -615,11 +614,11 @@ function frame(now) {
     if (mode === 'target') {
       drawTargetMode();
     } else if (mode === 'whip') {
-      simulate(dt);
-      if (cfg.mascot) updateMascot(now);
+      if (active) simulate(dt);
+      if (cfg.mascot) updateMascot(Date.now());
       drawTarget(now);
-      if (cfg.mascot) drawMascot(now);
-      drawWhip();
+      if (cfg.mascot) drawMascot(Date.now());
+      if (active) drawWhip();
       drawCracks(now);
       drawPopups(now);
     }
