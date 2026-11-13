@@ -3,6 +3,7 @@ const {
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const kwinCursor = require('./kwin-cursor');
 
 // Linux needs this for real transparency (a compositor must also be running).
 if (process.platform === 'linux') app.commandLine.appendSwitch('enable-transparent-visuals');
@@ -159,10 +160,13 @@ function stopPolling() {
   pollTimer = null;
 }
 
+// On KDE Wayland, KWin feeds us the real position; elsewhere ask Electron.
+const cursorPoint = () => kwinCursor.position() || screen.getCursorScreenPoint();
+
 function startPolling() {
   stopPolling();
   pollTimer = setInterval(() => {
-    const p = screen.getCursorScreenPoint();
+    const p = cursorPoint();
     const inside = p.x >= bounds.x && p.y >= bounds.y
       && p.x < bounds.x + bounds.width && p.y < bounds.y + bounds.height;
     if (!inside) {
@@ -183,7 +187,7 @@ function setMode(next) {
     updateTray();
     return;
   }
-  placeOnDisplay(screen.getCursorScreenPoint());
+  placeOnDisplay(cursorPoint());
   if (next === 'whip') {
     win.setIgnoreMouseEvents(true);
     win.setFocusable(false);
@@ -290,6 +294,7 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(() => {
     loadConfig();
     loadWords();
+    kwinCursor.start(path.join(app.getPath('userData'), 'kwin'));
     fs.watchFile(WORDS_PATH, { interval: 500 }, () => { loadWords(); sendState(); });
     // Linux transparency is more reliable when the window is created slightly after ready.
     setTimeout(() => {
@@ -303,6 +308,15 @@ if (!app.requestSingleInstanceLock()) {
       console.log(`Config: ${configPath()}`);
     }, process.platform === 'linux' ? 300 : 0);
   });
-  app.on('will-quit', () => globalShortcut.unregisterAll());
+  let cleanedUp = false;
+  app.on('will-quit', (e) => {
+    globalShortcut.unregisterAll();
+    if (cleanedUp) return;
+    // Unload the KWin cursor script before exiting.
+    e.preventDefault();
+    cleanedUp = true;
+    kwinCursor.stop().finally(() => app.quit());
+  });
+  for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => app.quit());
   app.on('window-all-closed', (e) => e.preventDefault());
 }
