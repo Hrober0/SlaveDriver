@@ -22,7 +22,8 @@ let lastCrack = 0;
 let hitFlash = 0;             // timestamp of last hit for target flash
 const popups = [];            // floating messages
 const cracks = [];            // crack starbursts
-let drag = null;              // target selection drag {x0, y0, x1, y1}
+let drag = null;              // target selection drag {x0, y0, x1, y1} (only in the window it started in)
+let shownDrag = null;         // drag box to draw here, mirrored from whichever display it started on
 let showTarget = false;
 let words = { first: ['ouch'], second: ['my head'] };
 let mascot = null;            // {x, y, state: 'idle'|'hurt'|'jump', t0, from, to, landedAt}
@@ -58,7 +59,7 @@ whipApi.onState((s) => {
   if (!mascot || JSON.stringify(target) !== prevTarget) spawnMascot();
   document.body.classList.toggle('target', mode === 'target');
   if (mode === 'whip' && prevMode !== 'whip') { pts = []; hand = null; cursor = null; }
-  if (mode !== 'target') drag = null;
+  if (mode !== 'target') { drag = null; shownDrag = null; }
   resize();
 });
 
@@ -558,8 +559,8 @@ function drawTargetMode() {
     ctx.fillStyle = 'rgba(255, 60, 60, 0.08)';
     ctx.fillRect(target.x, target.y, target.width, target.height);
   }
-  if (drag) {
-    const r = dragRect();
+  if (shownDrag) {
+    const r = shownDrag;
     ctx.clearRect(r.x, r.y, r.width, r.height);
     ctx.fillStyle = 'rgba(80, 200, 255, 0.15)';
     ctx.fillRect(r.x, r.y, r.width, r.height);
@@ -588,19 +589,29 @@ function dragRect() {
   };
 }
 
-addEventListener('mousedown', (e) => {
+whipApi.onDrag((r) => { shownDrag = r; });
+
+canvas.addEventListener('pointerdown', (e) => {
   if (mode !== 'target' || e.button !== 0) return;
+  canvas.setPointerCapture(e.pointerId);
   drag = { x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY };
+  whipApi.dragUpdate(dragRect());
 });
-addEventListener('mousemove', (e) => {
-  if (mode === 'target' && drag) { drag.x1 = e.clientX; drag.y1 = e.clientY; }
-});
-addEventListener('mouseup', () => {
+canvas.addEventListener('pointermove', (e) => {
   if (mode !== 'target' || !drag) return;
+  drag.x1 = e.clientX; drag.y1 = e.clientY;
+  whipApi.dragUpdate(dragRect());
+});
+function endDrag(e) {
+  if (mode !== 'target' || !drag) return;
+  drag.x1 = e.clientX; drag.y1 = e.clientY;
   const r = dragRect();
   drag = null;
+  whipApi.dragUpdate(null);
   if (r.width > 20 && r.height > 20) whipApi.setTarget(r);
-});
+}
+canvas.addEventListener('pointerup', endDrag);
+canvas.addEventListener('pointercancel', () => { drag = null; whipApi.dragUpdate(null); });
 addEventListener('keydown', (e) => {
   if (mode === 'target' && e.key === 'Escape') whipApi.cancelTarget();
 });

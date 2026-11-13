@@ -61,6 +61,7 @@ function loadWords() {
 }
 
 let win = null;
+let selWins = [];           // separate, focusable windows (one per display) for picking the target area
 let tray = null;
 let mode = 'off';           // 'off' | 'whip' | 'target'
 let modeBeforeTarget = 'off';
@@ -137,6 +138,58 @@ function createOverlay() {
   });
 }
 
+// Linux can't flip a window between click-through/unfocusable and interactive (setFocusable is a
+// no-op there, and the input region doesn't reliably come back under XWayland/KWin). So target
+// selection gets its own normal windows, one per display, that take input from the start.
+function openSelector() {
+  closeSelector();
+  const focusId = screen.getDisplayNearestPoint(cursorPoint()).id;
+  for (const d of screen.getAllDisplays()) {
+    const w = new BrowserWindow({
+      ...d.bounds,
+      show: false,
+      frame: false,
+      transparent: true,
+      backgroundColor: '#00000000',
+      resizable: false,
+      minimizable: false,
+      maximizable: false,
+      skipTaskbar: true,
+      hasShadow: false,
+      alwaysOnTop: true,
+      webPreferences: {
+        preload: path.join(__dirname, 'preload.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    });
+    selWins.push(w);
+    // KWin places XWayland windows itself when they are first mapped and ignores the requested
+    // position, so move the window onto its display again once it is visible.
+    const pin = () => { if (!w.isDestroyed()) { w.setBounds(d.bounds); sendState(); } };
+    w.on('show', () => { pin(); setTimeout(pin, 50); setTimeout(pin, 250); });
+    w.setAlwaysOnTop(true, 'screen-saver');
+    w.loadFile(path.join(__dirname, 'overlay.html'));
+    w.webContents.on('did-finish-load', () => {
+      if (w.isDestroyed()) return;
+      w.show();
+      if (d.id === focusId) w.focus();
+      sendState();
+    });
+    w.on('closed', () => {
+      if (!selWins.includes(w)) return;
+      // Closed some other way (e.g. Alt+F4): treat as cancel.
+      if (mode === 'target') setMode(modeBeforeTarget === 'whip' ? 'whip' : 'off');
+    });
+  }
+}
+
+function closeSelector() {
+  const ws = selWins;
+  selWins = [];
+  for (const w of ws) if (!w.isDestroyed()) w.close();
+}
+
 function placeOnDisplay(pt) {
   const d = screen.getDisplayNearestPoint(pt);
   win.setBounds(d.bounds);
@@ -144,15 +197,11 @@ function placeOnDisplay(pt) {
 }
 
 function sendState() {
-  if (!win) return;
-  win.webContents.send('state', {
-    mode,
-    origin: bounds || win.getBounds(),
-    target: effectiveTarget(),
-    showTarget,
-    words,
-    config,
-  });
+  const state = { mode, target: effectiveTarget(), showTarget, words, config };
+  if (win) win.webContents.send('state', { ...state, origin: bounds || win.getBounds() });
+  for (const w of selWins) {
+    if (!w.isDestroyed()) w.webContents.send('state', { ...state, origin: w.getBounds() });
+  }
 }
 
 function stopPolling() {
@@ -181,25 +230,23 @@ function startPolling() {
 function setMode(next) {
   mode = next;
   stopPolling();
+  if (next !== 'target') closeSelector();
   if (next === 'off') {
     win.hide();
     sendState();
     updateTray();
     return;
   }
-  placeOnDisplay(cursorPoint());
-  if (next === 'whip') {
-    win.setIgnoreMouseEvents(true);
-    win.setFocusable(false);
-    win.showInactive();           // never steal focus from VS Code
-    startPolling();
-  } else {
-    win.setIgnoreMouseEvents(false);
-    win.setFocusable(true);
-    win.show();
-    win.focus();
+  if (next === 'target') {
+    win.hide();
+    openSelector();
+    updateTray();
+    return;
   }
+  placeOnDisplay(cursorPoint());
+  win.showInactive();             // never steal focus from VS Code
   win.setAlwaysOnTop(true, 'screen-saver');
+  startPolling();
   sendState();
   updateTray();
 }
@@ -275,8 +322,10 @@ function updateTray() {
   ]));
 }
 
-ipcMain.on('set-target', (_e, r) => {
-  const o = bounds || win.getBounds();
+ipcMain.on('set-target', (e, r) => {
+  if (mode !== 'target') return;
+  const src = BrowserWindow.fromWebContents(e.sender);
+  const o = src && !src.isDestroyed() ? src.getBounds() : (bounds || win.getBounds());
   config.target = {
     x: Math.round(r.x + o.x), y: Math.round(r.y + o.y),
     width: Math.round(r.width), height: Math.round(r.height),
@@ -285,12 +334,27 @@ ipcMain.on('set-target', (_e, r) => {
   setMode(modeBeforeTarget === 'whip' ? 'whip' : 'off');
 });
 
-ipcMain.on('cancel-target', () => setMode(modeBeforeTarget === 'whip' ? 'whip' : 'off'));
+// A drag can start on one display and end on another: the window where it started keeps getting
+// pointer events (with coordinates outside itself), and we mirror the box onto every display.
+ipcMain.on('drag-update', (e, r) => {
+  const src = BrowserWindow.fromWebContents(e.sender);
+  if (!src || mode !== 'target') return;
+  const o = src.getBounds();
+  for (const w of selWins) {
+    if (w.isDestroyed()) continue;
+    const b = w.getBounds();
+    w.webContents.send('drag', r && { ...r, x: r.x + o.x - b.x, y: r.y + o.y - b.y });
+  }
+});
+
+ipcMain.on('cancel-target', () => mode === 'target' && setMode(modeBeforeTarget === 'whip' ? 'whip' : 'off'));
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on('second-instance', toggleWhip);
+  // `electron . --select-target` while running opens the area picker (handy for a KDE custom
+  // shortcut when global shortcuts don't work); a plain second launch toggles the whip.
+  app.on('second-instance', (_e, argv) => (argv.includes('--select-target') ? enterTargetMode() : toggleWhip()));
   app.whenReady().then(() => {
     loadConfig();
     loadWords();
