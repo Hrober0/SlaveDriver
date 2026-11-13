@@ -8,6 +8,7 @@ const HZ = 240;               // fixed physics rate
 const DT = 1 / HZ;
 
 let mode = 'off';
+let active = false;           // this display's overlay has the cursor (only it simulates/draws the whip)
 let cfg = null;
 let origin = { x: 0, y: 0 };
 let target = null;            // window-local rect
@@ -37,8 +38,12 @@ const JUMP_MS = 650;
 
 function resize() {
   const dpr = window.devicePixelRatio || 1;
-  canvas.width = Math.round(innerWidth * dpr);
-  canvas.height = Math.round(innerHeight * dpr);
+  const w = Math.round(innerWidth * dpr);
+  const h = Math.round(innerHeight * dpr);
+  // Assigning canvas.width clears the canvas even if unchanged, which shows as a blank frame.
+  if (canvas.width === w && canvas.height === h) return;
+  canvas.width = w;
+  canvas.height = h;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 addEventListener('resize', resize);
@@ -46,7 +51,9 @@ resize();
 
 whipApi.onState((s) => {
   const prevMode = mode;
+  const prevActive = active;
   mode = s.mode;
+  active = !!s.active;
   cfg = s.config;
   origin = s.origin;
   showTarget = s.showTarget;
@@ -58,12 +65,13 @@ whipApi.onState((s) => {
   };
   if (!mascot || JSON.stringify(target) !== prevTarget) spawnMascot();
   document.body.classList.toggle('target', mode === 'target');
-  if (mode === 'whip' && prevMode !== 'whip') { pts = []; hand = null; cursor = null; }
+  if ((mode === 'whip' && prevMode !== 'whip') || active !== prevActive) { pts = []; hand = null; cursor = null; }
   if (mode !== 'target') { drag = null; shownDrag = null; }
   resize();
 });
 
 whipApi.onCursor((p) => {
+  if (!active) return;
   if (cursor && Math.hypot(p.x - cursor.x, p.y - cursor.y) > 600 && hand) {
     // Display jump: teleport the whip instead of slinging it across the screen.
     pts = [];
@@ -626,11 +634,11 @@ function frame(now) {
     if (mode === 'target') {
       drawTargetMode();
     } else if (mode === 'whip') {
-      simulate(dt);
+      if (active) simulate(dt);
       if (cfg.mascot) updateMascot(now);
       drawTarget(now);
       if (cfg.mascot) drawMascot(now);
-      drawWhip();
+      if (active) drawWhip();
       drawCracks(now);
       drawPopups(now);
     }
