@@ -60,13 +60,16 @@ function loadWords() {
   }
 }
 
-let win = null;
+// One click-through overlay per display, created once and never moved. Moving a single overlay
+// between displays flickered: KWin re-places XWayland windows, so its reported bounds could
+// disagree with the requested ones and it got re-placed on every poll tick.
+let overlays = [];          // [{ win, display }]
+let active = null;          // overlay that currently has the cursor (and draws the whip)
 let selWins = [];           // separate, focusable windows (one per display) for picking the target area
 let tray = null;
 let mode = 'off';           // 'off' | 'whip' | 'target'
 let modeBeforeTarget = 'off';
 let pollTimer = null;
-let bounds = null;
 let config = null;
 
 const configPath = () => path.join(app.getPath('userData'), 'config.json');
@@ -106,8 +109,52 @@ function defaultTarget() {
 
 const effectiveTarget = () => config.target || defaultTarget();
 
-function createOverlay() {
-  win = new BrowserWindow({
+// ---------- mascot ----------
+// One mascot shared by every overlay, in global screen coordinates. Each overlay used to keep its
+// own copy, so with an agent area spanning monitors the mascot could hop onto a display whose
+// overlay had a different (or no) mascot, and it vanished. Times are Date.now() ms so every
+// renderer can derive the same animation phase: hurt for HURT_MS at `from`, then a hop to `to`.
+const MASCOT_HURT_MS = 320;
+const MASCOT_JUMP_MS = 650;
+let mascot = null;          // { from, to, hitAt }
+let mascotTargetKey = null;
+
+// Random spot in the agent area that is fully on some display (a box spanning monitors of
+// different sizes can cover gaps no screen shows). Prefers spots > 180 px away from `avoid`.
+function mascotSpot(avoid) {
+  const r = effectiveTarget();
+  const mx = 50, mTop = 70, mBottom = 50;
+  const displays = screen.getAllDisplays().map((d) => d.bounds);
+  const visible = (p) => displays.some((b) => p.x >= b.x + mx && p.x <= b.x + b.width - mx
+    && p.y >= b.y + mTop && p.y <= b.y + b.height - mBottom);
+  const minX = r.x + mx, maxX = Math.max(minX, r.x + r.width - mx);
+  const minY = r.y + mTop, maxY = Math.max(minY, r.y + r.height - mBottom);
+  let best = null;
+  for (let k = 0; k < 60; k++) {
+    const p = { x: minX + Math.random() * (maxX - minX), y: minY + Math.random() * (maxY - minY) };
+    if (!visible(p)) continue;
+    const d = avoid ? Math.hypot(p.x - avoid.x, p.y - avoid.y) : Infinity;
+    if (d > 180) return p;
+    if (!best || d > best.d) best = { x: p.x, y: p.y, d };
+  }
+  if (best) return { x: best.x, y: best.y };
+  // Nothing visible found: fall back to the middle of the area.
+  return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+}
+
+function spawnMascot() {
+  const p = mascotSpot();
+  mascot = { from: p, to: p, hitAt: 0 };
+  mascotTargetKey = JSON.stringify(effectiveTarget());
+}
+
+function sendMascot() {
+  for (const o of overlays) if (!o.win.isDestroyed()) o.win.webContents.send('mascot', mascot);
+}
+
+function createOverlay(d) {
+  const win = new BrowserWindow({
+    ...d.bounds,
     show: false,
     frame: false,
     transparent: true,
@@ -131,11 +178,43 @@ function createOverlay() {
   win.setAlwaysOnTop(true, 'screen-saver');
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   win.setIgnoreMouseEvents(true);
+  // KWin places XWayland windows itself when first mapped; put it back on its display.
+  const pin = () => { if (!win.isDestroyed()) { win.setBounds(d.bounds); sendState(); } };
+  win.on('show', () => { pin(); setTimeout(pin, 50); setTimeout(pin, 250); });
   win.loadFile(path.join(__dirname, 'overlay.html'));
   win.webContents.on('did-finish-load', sendState);
   win.webContents.on('console-message', (_e, level, message, line, source) => {
     if (level >= 2) console.error(`[overlay] ${message} (${source}:${line})`);
   });
+  return { win, display: d };
+}
+
+function createOverlays() {
+  for (const o of overlays) if (!o.win.isDestroyed()) o.win.destroy();
+  overlays = screen.getAllDisplays().map(createOverlay);
+  active = null;
+}
+
+// Displays were added/removed/rearranged: rebuild the overlays.
+// (metrics-changed also fires for work-area-only changes like an auto-hiding panel; ignore those.)
+const layoutKey = (ds) => JSON.stringify(ds.map((d) => [d.id, d.bounds]));
+function rebuildOverlays() {
+  if (!overlays.length) return;
+  if (layoutKey(screen.getAllDisplays()) === layoutKey(overlays.map((o) => o.display))) return;
+  createOverlays();
+  spawnMascot();
+  if (mode === 'whip') setMode('whip');
+}
+
+const contains = (b, p) => p.x >= b.x && p.y >= b.y && p.x < b.x + b.width && p.y < b.y + b.height;
+
+// Overlay under the cursor. In a gap between displays, keep the current one instead of bouncing.
+function overlayAt(p) {
+  const hit = overlays.find((o) => contains(o.display.bounds, p));
+  if (hit) return hit;
+  if (active) return active;
+  const d = screen.getDisplayNearestPoint(p);
+  return overlays.find((o) => o.display.id === d.id) || overlays[0];
 }
 
 // Linux can't flip a window between click-through/unfocusable and interactive (setFocusable is a
@@ -190,15 +269,13 @@ function closeSelector() {
   for (const w of ws) if (!w.isDestroyed()) w.close();
 }
 
-function placeOnDisplay(pt) {
-  const d = screen.getDisplayNearestPoint(pt);
-  win.setBounds(d.bounds);
-  bounds = win.getBounds();
-}
-
 function sendState() {
-  const state = { mode, target: effectiveTarget(), showTarget, words, config };
-  if (win) win.webContents.send('state', { ...state, origin: bounds || win.getBounds() });
+  if (!mascot || JSON.stringify(effectiveTarget()) !== mascotTargetKey) spawnMascot();
+  const state = { mode, target: effectiveTarget(), showTarget, words, config, mascot };
+  for (const o of overlays) {
+    if (o.win.isDestroyed()) continue;
+    o.win.webContents.send('state', { ...state, origin: o.display.bounds, active: o === active });
+  }
   for (const w of selWins) {
     if (!w.isDestroyed()) w.webContents.send('state', { ...state, origin: w.getBounds() });
   }
@@ -216,14 +293,15 @@ function startPolling() {
   stopPolling();
   pollTimer = setInterval(() => {
     const p = cursorPoint();
-    const inside = p.x >= bounds.x && p.y >= bounds.y
-      && p.x < bounds.x + bounds.width && p.y < bounds.y + bounds.height;
-    if (!inside) {
-      // Cursor moved to another monitor: follow it.
-      placeOnDisplay(p);
+    const o = overlayAt(p);
+    if (o !== active) {
+      // Cursor moved to another monitor: hand the whip to that display's overlay.
+      active = o;
       sendState();
     }
-    win.webContents.send('cursor', { x: p.x - bounds.x, y: p.y - bounds.y });
+    if (!o || o.win.isDestroyed()) return;
+    const b = o.display.bounds;
+    o.win.webContents.send('cursor', { x: p.x - b.x, y: p.y - b.y });
   }, 4);
 }
 
@@ -231,21 +309,25 @@ function setMode(next) {
   mode = next;
   stopPolling();
   if (next !== 'target') closeSelector();
+  const hideOverlays = () => { for (const o of overlays) if (!o.win.isDestroyed()) o.win.hide(); };
   if (next === 'off') {
-    win.hide();
+    hideOverlays();
     sendState();
     updateTray();
     return;
   }
   if (next === 'target') {
-    win.hide();
+    hideOverlays();
     openSelector();
     updateTray();
     return;
   }
-  placeOnDisplay(cursorPoint());
-  win.showInactive();             // never steal focus from VS Code
-  win.setAlwaysOnTop(true, 'screen-saver');
+  active = overlayAt(cursorPoint());
+  for (const o of overlays) {
+    if (o.win.isDestroyed()) continue;
+    o.win.showInactive();         // never steal focus from VS Code
+    o.win.setAlwaysOnTop(true, 'screen-saver');
+  }
   startPolling();
   sendState();
   updateTray();
@@ -325,7 +407,8 @@ function updateTray() {
 ipcMain.on('set-target', (e, r) => {
   if (mode !== 'target') return;
   const src = BrowserWindow.fromWebContents(e.sender);
-  const o = src && !src.isDestroyed() ? src.getBounds() : (bounds || win.getBounds());
+  if (!src || src.isDestroyed()) return;
+  const o = src.getBounds();
   config.target = {
     x: Math.round(r.x + o.x), y: Math.round(r.y + o.y),
     width: Math.round(r.width), height: Math.round(r.height),
@@ -347,6 +430,14 @@ ipcMain.on('drag-update', (e, r) => {
   }
 });
 
+// The active overlay saw the whip tip hit the mascot: start its hurt + hop, shown on every display.
+ipcMain.on('mascot-hit', () => {
+  const now = Date.now();
+  if (!mascot || now - mascot.hitAt < MASCOT_HURT_MS + MASCOT_JUMP_MS) return;
+  mascot = { from: mascot.to, to: mascotSpot(mascot.to), hitAt: now };
+  sendMascot();
+});
+
 ipcMain.on('cancel-target', () => mode === 'target' && setMode(modeBeforeTarget === 'whip' ? 'whip' : 'off'));
 
 if (!app.requestSingleInstanceLock()) {
@@ -362,7 +453,10 @@ if (!app.requestSingleInstanceLock()) {
     fs.watchFile(WORDS_PATH, { interval: 500 }, () => { loadWords(); sendState(); });
     // Linux transparency is more reliable when the window is created slightly after ready.
     setTimeout(() => {
-      createOverlay();
+      createOverlays();
+      for (const ev of ['display-added', 'display-removed', 'display-metrics-changed']) {
+        screen.on(ev, rebuildOverlays);
+      }
       registerShortcuts();
       tray = new Tray(makeTrayIcon());
       tray.setToolTip('SlaveDriver');

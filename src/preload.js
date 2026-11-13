@@ -6,5 +6,7 @@ contextBridge.exposeInMainWorld('whipApi', {
   setTarget: (rect) => ipcRenderer.send('set-target', rect),
   cancelTarget: () => ipcRenderer.send('cancel-target'),
   dragUpdate: (rect) => ipcRenderer.send('drag-update', rect),
+  onMascot: (cb) => ipcRenderer.on('mascot', (_e, m) => cb(m)),
+  mascotHit: () => ipcRenderer.send('mascot-hit'),
   onDrag: (cb) => ipcRenderer.on('drag', (_e, r) => cb(r)),
 });
