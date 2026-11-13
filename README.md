@@ -70,5 +70,5 @@ Edit [`words.json`](words.json). A message is `random(first) + " " + random(seco
 ## Linux notes
 
 - Transparency needs a compositor (most desktop environments have one).
-- Works best on **X11**. On Wayland, global cursor position and global shortcuts are restricted. Run with `npm start -- --ozone-platform=x11` (XWayland) if the whip does not follow the cursor.
+- Works best on **X11** or **KDE Plasma Wayland**. On Plasma Wayland the app loads a small KWin script that reports the global cursor position over D-Bus, so the whip follows the cursor everywhere. On other Wayland compositors (GNOME, Sway, …) the cursor can only be tracked over XWayland windows, and global shortcuts may not work (use the tray icon).
 - Text-to-speech needs `speech-dispatcher`. Without it the overlay stays silent.
