@@ -67,6 +67,33 @@ Edit [`words.json`](words.json). A message is `random(first) + " " + random(seco
 - `whip`: physics (`segments`, `segmentLength`, `gravity`, `damping`, `drag`, `stiffness`, `iterations`)
 - `shortcuts`: Electron accelerator strings
 
+## Development
+
+The app is written in TypeScript and bundled with esbuild into `dist/` (not committed). `npm start` and the one-click launchers rebuild before every start.
+
+```sh
+npm run typecheck         # tsc, no output files
+npm run build             # bundle src/ -> dist/
+npm run build:watch       # rebuild on save (restart the app to pick up main-process changes)
+npm run check             # typecheck + build
+```
+
+```
+src/
+  shared/      types, IPC channel names + API contract, geometry, mascot timing (used by all processes)
+  main/        Electron main process
+    main.ts             composition root + app lifecycle
+    app-controller.ts   mode state machine (off / whip / target), IPC, tray + shortcut wiring
+    config-store.ts     config.json load / migrate / save
+    words-store.ts      words.json load + watch
+    mascot-controller.ts  the one shared mascot (spawn spots, hit + hop)
+    tray.ts, shortcuts.ts
+    cursor/             CursorSource interface, KWin (KDE Wayland) source, Electron fallback
+    windows/            per-display window factory, whip overlays, target-picker windows
+  preload/     exposes window.whipApi
+  renderer/    overlay page: whip physics (whip/rope.ts) + drawing, mascot, hit judge, effects, picker
+```
+
 ## Linux notes
 
 - Transparency needs a compositor (most desktop environments have one).
