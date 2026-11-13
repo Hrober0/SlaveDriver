@@ -5,4 +5,6 @@ contextBridge.exposeInMainWorld('whipApi', {
   onCursor: (cb) => ipcRenderer.on('cursor', (_e, p) => cb(p)),
   setTarget: (rect) => ipcRenderer.send('set-target', rect),
   cancelTarget: () => ipcRenderer.send('cancel-target'),
+  dragUpdate: (rect) => ipcRenderer.send('drag-update', rect),
+  onDrag: (cb) => ipcRenderer.on('drag', (_e, r) => cb(r)),
 });
