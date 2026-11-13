@@ -67,8 +67,36 @@ Edit [`words.json`](words.json). A message is `random(first) + " " + random(seco
 - `whip`: physics (`segments`, `segmentLength`, `gravity`, `damping`, `drag`, `stiffness`, `iterations`)
 - `shortcuts`: Electron accelerator strings
 
+## Development
+
+The app is written in TypeScript and bundled with esbuild into `dist/` (not committed). `npm start` and the one-click launchers rebuild before every start.
+
+```sh
+npm run typecheck         # tsc, no output files
+npm run build             # bundle src/ -> dist/
+npm run build:watch       # rebuild on save (restart the app to pick up main-process changes)
+npm run check             # typecheck + build
+```
+
+```
+src/
+  shared/      types, IPC channel names + API contract, geometry, mascot timing (used by all processes)
+  main/        Electron main process
+    main.ts             composition root + app lifecycle
+    app-controller.ts   mode state machine (off / whip / target), IPC, tray + shortcut wiring
+    config-store.ts     config.json load / migrate / save
+    words-store.ts      words.json load + watch
+    mascot-controller.ts  the one shared mascot (spawn spots, hit + hop)
+    tray.ts, shortcuts.ts
+    cursor/             CursorSource interface, KWin (KDE Wayland) source, Electron fallback
+    windows/            per-display window factory, whip overlays, target-picker windows
+  preload/     exposes window.whipApi
+  renderer/    overlay page: whip physics (whip/rope.ts) + drawing, mascot, hit judge, effects, picker
+```
+
 ## Linux notes
 
 - Transparency needs a compositor (most desktop environments have one).
 - Works best on **X11** or **KDE Plasma Wayland**. On Plasma Wayland the app loads a small KWin script that reports the global cursor position over D-Bus, so the whip follows the cursor everywhere. On other Wayland compositors (GNOME, Sway, …) the cursor can only be tracked over XWayland windows, and global shortcuts may not work (use the tray icon).
+- If global shortcuts don't work, bind a desktop shortcut to `./slavedriver.sh` (toggles the whip) or `./slavedriver.sh --select-target` (opens the agent-area picker) while the app is running. The picker covers every monitor, and a box can span monitors.
 - Text-to-speech needs `speech-dispatcher`. Without it the overlay stays silent.
