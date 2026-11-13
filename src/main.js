@@ -109,6 +109,49 @@ function defaultTarget() {
 
 const effectiveTarget = () => config.target || defaultTarget();
 
+// ---------- mascot ----------
+// One mascot shared by every overlay, in global screen coordinates. Each overlay used to keep its
+// own copy, so with an agent area spanning monitors the mascot could hop onto a display whose
+// overlay had a different (or no) mascot, and it vanished. Times are Date.now() ms so every
+// renderer can derive the same animation phase: hurt for HURT_MS at `from`, then a hop to `to`.
+const MASCOT_HURT_MS = 320;
+const MASCOT_JUMP_MS = 650;
+let mascot = null;          // { from, to, hitAt }
+let mascotTargetKey = null;
+
+// Random spot in the agent area that is fully on some display (a box spanning monitors of
+// different sizes can cover gaps no screen shows). Prefers spots > 180 px away from `avoid`.
+function mascotSpot(avoid) {
+  const r = effectiveTarget();
+  const mx = 50, mTop = 70, mBottom = 50;
+  const displays = screen.getAllDisplays().map((d) => d.bounds);
+  const visible = (p) => displays.some((b) => p.x >= b.x + mx && p.x <= b.x + b.width - mx
+    && p.y >= b.y + mTop && p.y <= b.y + b.height - mBottom);
+  const minX = r.x + mx, maxX = Math.max(minX, r.x + r.width - mx);
+  const minY = r.y + mTop, maxY = Math.max(minY, r.y + r.height - mBottom);
+  let best = null;
+  for (let k = 0; k < 60; k++) {
+    const p = { x: minX + Math.random() * (maxX - minX), y: minY + Math.random() * (maxY - minY) };
+    if (!visible(p)) continue;
+    const d = avoid ? Math.hypot(p.x - avoid.x, p.y - avoid.y) : Infinity;
+    if (d > 180) return p;
+    if (!best || d > best.d) best = { x: p.x, y: p.y, d };
+  }
+  if (best) return { x: best.x, y: best.y };
+  // Nothing visible found: fall back to the middle of the area.
+  return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+}
+
+function spawnMascot() {
+  const p = mascotSpot();
+  mascot = { from: p, to: p, hitAt: 0 };
+  mascotTargetKey = JSON.stringify(effectiveTarget());
+}
+
+function sendMascot() {
+  for (const o of overlays) if (!o.win.isDestroyed()) o.win.webContents.send('mascot', mascot);
+}
+
 function createOverlay(d) {
   const win = new BrowserWindow({
     ...d.bounds,
@@ -159,6 +202,7 @@ function rebuildOverlays() {
   if (!overlays.length) return;
   if (layoutKey(screen.getAllDisplays()) === layoutKey(overlays.map((o) => o.display))) return;
   createOverlays();
+  spawnMascot();
   if (mode === 'whip') setMode('whip');
 }
 
@@ -226,7 +270,8 @@ function closeSelector() {
 }
 
 function sendState() {
-  const state = { mode, target: effectiveTarget(), showTarget, words, config };
+  if (!mascot || JSON.stringify(effectiveTarget()) !== mascotTargetKey) spawnMascot();
+  const state = { mode, target: effectiveTarget(), showTarget, words, config, mascot };
   for (const o of overlays) {
     if (o.win.isDestroyed()) continue;
     o.win.webContents.send('state', { ...state, origin: o.display.bounds, active: o === active });
@@ -383,6 +428,14 @@ ipcMain.on('drag-update', (e, r) => {
     const b = w.getBounds();
     w.webContents.send('drag', r && { ...r, x: r.x + o.x - b.x, y: r.y + o.y - b.y });
   }
+});
+
+// The active overlay saw the whip tip hit the mascot: start its hurt + hop, shown on every display.
+ipcMain.on('mascot-hit', () => {
+  const now = Date.now();
+  if (!mascot || now - mascot.hitAt < MASCOT_HURT_MS + MASCOT_JUMP_MS) return;
+  mascot = { from: mascot.to, to: mascotSpot(mascot.to), hitAt: now };
+  sendMascot();
 });
 
 ipcMain.on('cancel-target', () => mode === 'target' && setMode(modeBeforeTarget === 'whip' ? 'whip' : 'off'));
